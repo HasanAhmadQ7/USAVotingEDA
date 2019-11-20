@@ -1,0 +1,173 @@
+---
+title: "Exploring the BRFSS data"
+author: "Hasan Ahmad, curiaris@gmail.com"
+output: 
+  html_document: 
+    fig_height: 4
+    highlight: pygments
+    theme: spacelab
+---
+
+## Setup
+
+### Load packages
+
+```{r load-packages, message = FALSE}
+
+library(dplyr)
+# Packages for visualization
+library(ggplot2); library(treemap); library(plotly)
+library(janitor) # for remove_constant method
+library(imputeMissings) # for impute method
+```
+
+### Load data
+
+```{r load-data}
+load("brfss2013.RData")
+```
+
+
+
+* * *
+
+## Part 1: Data
+
+In this analysis we will try to gain insights on trends associated with presidential voting in the United States using the Behavioral Risk Surveillance System (BRFSS) data.
+
+Although that the BRFSS objective is to collect uniform, state-specific data on preventive health practices and risk behaviors that are linked to chronic diseases, it contains valuable demographic and social data that are not solely related to health risks.
+
+
+The analysis presented here is observational, and we cannot establish the presence of causal relationships based on it.
+
+BRFSS is gathered using a complex multi-stage sampling which allows us to somewhat generalize our conclusions over all phone users in the United States.
+
+Possible sampling biases in this analysis are : Voluntary response bias. However, this bias is mitigated by the fact that individuals where called multiple times.  
+
+A correct analysis requires accounting for the sampling weights during calculations.
+
+
+
+* * *
+
+## Part 2: Research questions
+
+In the first question we will try to find the variables that are strongly related to voting. The second and third questions arouse during the explantory analysis of the first question.
+
+**Research quesion 1:**
+Which variables are associated the most with voting?
+
+**Research quesion 2:**
+What is the relationship between age, smoking and voting?
+
+**Research quesion 3:**
+How is voting proportion distribbuted across income and state?
+
+* * *
+
+## Part 3: Exploratory data analysis
+
+**Research quesion 1:**
+
+The field scntvot1 in the survey answers the following question: Did you vote in the last
+presedential elections?
+
+Let us prepare the data, by 1- dropping all rows with na for scntvot1, 2- dropping any column with more than 20% missing values, 3- imputing the missing values for other parameters with the median, 4- adding numOfVotes encoding yes for voting as 1 and not voting as 0. 5- encoding categorial variable as numerical, 6- removing columns with constant values (done after imputation to avoid considering a column with na a variable)
+
+```{r}
+# Data preparation and cleaning
+# step1
+votingDF <- subset(brfss2013, !is.na(scntvot1)) 
+# step2
+votingDF <- votingDF[, colMeans(is.na(votingDF))<0.2]
+# step3
+votingDF <- impute(votingDF, object = NULL, method = "median/mode", flag = FALSE)
+#step4
+votingDF <- votingDF %>% mutate(numOfVotes = ifelse(scntvot1 == "Yes", 1, 0))
+#step5
+numericFull <- data.matrix(votingDF)
+votingDFNumeric <- votingDF
+votingDFNumeric[] <- numericFull
+#step 6
+votingDFNumeric <- remove_constant(votingDFNumeric)
+```
+In order to decide what factors among the studied in BRFSS affect voting the most,
+we calculate the weigted correlation matrix 
+```{r}
+weighted_corr <- cov.wt(votingDFNumeric, wt = votingDFNumeric$X_llcpwt , cor = TRUE)
+corr_matrix <- weighted_corr$cor
+```
+We will check the variables that are have a corelation larger than 0.15 with voting for further investigation.
+```{r}
+votCor <- corr_matrix[,"scntvot1"]
+highlyCor = votCor[votCor>0.15] 
+sort(highlyCor, decreasing = TRUE)
+```
+Among the highly correlated variables we find: a- two age-related variabls X_age_g  X_ageg5yr b- two healthcare-related:healthpln1,bloodcho and c- One race-related variable X_hispanic.
+
+To look into possible relations with these variables we start by calculating and visualizing the aggregated weighted mean of voting over each variable as in the two plots below.
+
+Calculations:
+```{r}
+sVoting <- votingDF %>% select(X_smoker3, numOfVotes, X_llcpwt) %>% group_by(X_smoker3) %>% summarise(votingProportion = weighted.mean(numOfVotes, X_llcpwt))
+rVoting <- votingDF %>% select(X_hispanc, numOfVotes, X_llcpwt) %>% group_by(X_hispanc) %>% summarise(votingProportion = weighted.mean(numOfVotes, X_llcpwt))
+hVoting<-votingDF %>% select(hlthpln1, numOfVotes, X_llcpwt) %>% group_by(hlthpln1) %>% summarise(votingProportion = weighted.mean(numOfVotes, X_llcpwt))
+ageVoting <- votingDF %>% select(X_age_g, numOfVotes, X_llcpwt) %>% group_by(X_age_g) %>% summarise(votingProportion = weighted.mean(numOfVotes, X_llcpwt))
+
+```
+Visualization
+```{r}
+p1 <- plot_ly(rVoting, x = ~X_hispanc, y = ~votingProportion, type = "bar", name = "race")
+p2 <- plot_ly(hVoting, x = ~hlthpln1, y = ~votingProportion, type = "bar", name = "health plan")
+p3 <- plot_ly(sVoting, x = ~X_smoker3, y = ~votingProportion, name = ~"smoking", 
+type = "bar")
+p4 <- plot_ly(ageVoting, x = ~X_age_g, y = ~votingProportion, name = ~"age", type = "bar")
+subplot(p1, p2, titleY = TRUE, shareY = TRUE)
+subplot(p3, p4, titleY = TRUE, shareY = TRUE)
+```
+
+We can see that voting is higher in: 1- non-Hispanic population, 2- people with health plans, 3- non-smokers and especially former smokers, 4- older age.
+ 
+Since voting is high in former smokers, the second research question we chose is the relationship between age, smoking and voting. Quitting smoking is a chronological process and we might find some interesting pattern across age segments.
+ 
+Having a health plan might be a sign of having proper financial means, To further investigate the relationship between financial situation and voting, the third research question will be : How voting proportion is distributed across income and state.
+ 
+
+**Research quesion 2:**
+
+What is the relationship between age, smoking and voting?
+We aggregate the mean of voting as a function of smoking again, but this time divided between different age segments.
+
+```{r}
+votingDF <- votingDF %>% mutate(smokingShortened = ifelse(!grepl("Current", X_smoker3 ), ifelse(grepl("Former",X_smoker3 ), "Former smoker" ,"Never smoked" ), ifelse(grepl("every",X_smoker3 ),"Smokes daily","Smokes often"  )))
+ggplot(votingDF, aes(x=X_age_g,fill = scntvot1)) + geom_bar(position = 'fill')+coord_flip()+facet_grid(~smokingShortened)+labs(x='Age', y ="Smoking", fill = 'voting proportion') + theme(panel.spacing = unit(1, "lines"))
+
+```
+
+Contrary to our premise, results show that, regardless of age, we can see that non-smokers tend to vote more than smokers.
+
+**Research quesion 3:**
+
+How income and location affect voting proportion? The actual worth of income depends on the location, so we try to see if the patter holds 
+
+
+```{r}
+incomeStateVote <- votingDF %>% select(income2, X_state, numOfVotes)
+votesPerStatePerIncome <- incomeStateVote %>% group_by(income2, X_state) %>% summarize(numOfVotes = mean(numOfVotes))
+votesPerStatePerIncome<-votesPerStatePerIncome[!votesPerStatePerIncome$X_state=="Kentucky",]
+treemap(votesPerStatePerIncome, index = c("X_state", "income2"), vSize = "numOfVotes")
+
+```
+
+We can see that across all the states, higher income is associated with a higher voting ratio.
+
+## Summary
+
+BRFSS data indicates that the proportion of people who vote increase with age and income. We also found that non-smokers tend to vote more than smokers across all age segments.
+
+Hispanic, Latinos and Spanish speaking people votes significantly less than the rest of the population.
+
+The data also shows a positive association between the income in a certain location and the propability of voting.
+
+* * *
+
